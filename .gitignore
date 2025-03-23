@@ -1,23 +1,30 @@
-# Python build files
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
+*.pdb
 *.egg-info/
 
 # Virtual environments
-env/
+.env/
 .venv/
 venv/
 
-# IDE/editor configs
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE configs
 .vscode/
 .idea/
 
-# Data & training
+# Training data & models
 checkpoints/
 logs/
 data/
+*.pt
+*.ckpt
 
-# Kaissa GUI assets
+# GUI images
 kaissa_gui/Images/
