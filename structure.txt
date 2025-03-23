@@ -1,0 +1,44 @@
+kaissa_ai_project/
+├── kaissa_engine/
+│   ├── __init__.py
+│   ├── piece_constants.py
+│   └── kaissa_engine.py
+├── kaissa_gui/
+│   ├── __init__.py
+│   └── kaissa_gui.py
+├── kaissa_encoding/
+│   ├── __init__.py
+│   ├── board_encoder.py
+│   ├── move_encoder.py
+│   └── action_space.py
+├── kaissa_ai/
+│   ├── __init__.py
+│   ├── mcts.py
+│   ├── self_play.py
+│   └── eval_agent.py
+├── kaissa_net/
+│   ├── __init__.py
+│   ├── model.py
+│   └── loss.py
+├── training/
+│   ├── __init__.py
+│   ├── train.py
+│   ├── replay_buffer.py
+│   └── dataset_loader.py
+├── scripts/
+│   ├── play_vs_ai.py
+│   ├── evaluate.py
+│   └── export_model.py
+├── tests/
+│   ├── test_engine.py
+│   ├── test_encoder.py
+│   └── test_mcts.py
+├── configs/
+│   ├── config.yaml
+│   └── model.yaml
+├── checkpoints/       (empty - models will be saved here)
+├── logs/              (empty - TensorBoard logs can be saved here)
+├── data/
+│   └── self_play_games/ (empty - self-play game records can be stored here)
+├── README.md
+└── requirements.txt

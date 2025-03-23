@@ -1,0 +1,23 @@
+# Python build files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual environments
+env/
+.venv/
+venv/
+
+# IDE/editor configs
+.vscode/
+.idea/
+
+# Data & training
+checkpoints/
+logs/
+data/
+
+# Kaissa GUI assets
+kaissa_gui/Images/
