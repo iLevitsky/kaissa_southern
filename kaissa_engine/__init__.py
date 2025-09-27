@@ -9,3 +9,5 @@ from .piece_constants import (
     UBAR, UBARA, TARNSMAN, BUILDER, INITIATE, SCRIBE, ASSASSIN, RIDER, SPEARMAN, HOMESTONE
 )
 from .kaissa_engine import KaissaGameEngine, BOARD_ROWS, BOARD_COLS
+from .__version__ import __version__
+

@@ -4,11 +4,13 @@ import pygame
 import sys
 import os
 from pygame.locals import VIDEORESIZE
+from kaissa_engine.kaissa_engine import get_protected_squares, square_index, index_to_rc
 
-from kaissa_engine import (
+
+from kaissa_engine.kaissa_engine import (
     KaissaGameEngine, BOARD_ROWS, BOARD_COLS,
     UBAR, UBARA, TARNSMAN, BUILDER, INITIATE,
-    SCRIBE, ASSASSIN, RIDER, SPEARMAN, HOMESTONE
+    SCRIBE, ASSASSIN, RIDER, SPEARMAN, HOMESTONE, predict_best_move
 )
 
 
@@ -74,6 +76,10 @@ class KaissaGUI:
         pygame.display.set_caption("Southern Kaissa (Promotions)")
 
         self.game_engine = KaissaGameEngine()
+
+        self.best_move = None      # Best move for the selected piece.
+        self.best_overall = None   # Best move overall for the current turn.
+
 
         self.selected_square = None
         self.legal_moves_for_selected = []
@@ -188,15 +194,14 @@ class KaissaGUI:
         if self._try_click_homestone_icon(mx, my):
             return
 
-        if not (self.board_left <= mx < self.board_left+self.board_draw_width and
-                self.board_top  <= my < self.board_top +self.board_draw_height):
+        if not (self.board_left <= mx < self.board_left + self.board_draw_width and
+                self.board_top  <= my < self.board_top  + self.board_draw_height):
             return
 
         board_x = mx - self.board_left
         board_y = my - self.board_top
         disp_col = int(board_x // self.square_size)
         disp_row = int(board_y // self.square_size)
-
         r, c = self._display_to_logical(disp_row, disp_col)
 
         if self.selected_square is None:
@@ -208,18 +213,34 @@ class KaissaGUI:
                 ptype, is_yellow, has_moved = cell
                 if is_yellow == self.game_engine.is_yellow_turn:
                     self.selected_square = (r, c)
+                    # Compute overall best move for the turn.
+                    self.best_overall = predict_best_move(self.game_engine, search_depth=3)
+                    # Filter moves that start from the selected square.
                     all_moves = self.game_engine.get_legal_moves()
-                    self.legal_moves_for_selected = [mv for mv in all_moves if mv[0] == (r, c)]
+                    selected_moves = [mv for mv in all_moves if mv[0] == (r, c)]
+                    if selected_moves:
+                        # If the overall best move is for this piece, use it.
+                        if self.best_overall is not None and self.best_overall[0] == (r, c):
+                            self.best_move = self.best_overall
+                        else:
+                            # Otherwise, use the first legal move for the piece.
+                            self.best_move = selected_moves[0]
+                        # print("Selected Piece Best Move:", self.best_move)
+                    else:
+                        print("No legal moves for selected piece!")
+                    self.legal_moves_for_selected = selected_moves
         else:
             if self.selected_square == (r, c):
                 self.selected_square = None
                 self.legal_moves_for_selected = []
+                self.best_move = None
                 return
 
             possible_moves = [mv for mv in self.legal_moves_for_selected if mv[1] == (r, c)]
             if not possible_moves:
                 self.selected_square = None
                 self.legal_moves_for_selected = []
+                self.best_move = None
                 return
 
             chosen_move = None
@@ -239,9 +260,14 @@ class KaissaGUI:
                         self.red_captures.append(captured_ptype)
                 self.game_engine.apply_move(chosen_move)
                 self.half_move_count += 1
+                # Clear suggestions after a move is applied.
+                self.best_move = None
+                self.best_overall = None
 
             self.selected_square = None
             self.legal_moves_for_selected = []
+
+
 
     def _prompt_promotion_choice(self, possible_moves):
         # We'll display a small pop-up to pick a promotion.
@@ -383,6 +409,48 @@ class KaissaGUI:
         self._draw_captures()
         self._draw_homestone_icons()
 
+        # Highlight the best move for the selected piece in pink.
+        if self.best_move is not None:
+            start, end, *rest = self.best_move
+            start_r, start_c = start
+            end_r, end_c = end
+            disp_start = self._logical_to_display(start_r, start_c)
+            disp_end   = self._logical_to_display(end_r, end_c)
+            start_rect = pygame.Rect(
+                self.board_left + disp_start[1] * self.square_size,
+                self.board_top  + disp_start[0] * self.square_size,
+                self.square_size, self.square_size
+            )
+            end_rect = pygame.Rect(
+                self.board_left + disp_end[1] * self.square_size,
+                self.board_top  + disp_end[0] * self.square_size,
+                self.square_size, self.square_size
+            )
+            # Pink border (RGB: 255,105,180).
+            pygame.draw.rect(self.screen, (255,105,180), start_rect, 4)
+            pygame.draw.rect(self.screen, (255,105,180), end_rect, 4)
+
+        # Highlight the overall best move in green.
+        if self.best_overall is not None:
+            start, end, *rest = self.best_overall
+            start_r, start_c = start
+            end_r, end_c = end
+            disp_start = self._logical_to_display(start_r, start_c)
+            disp_end   = self._logical_to_display(end_r, end_c)
+            start_rect = pygame.Rect(
+                self.board_left + disp_start[1] * self.square_size,
+                self.board_top  + disp_start[0] * self.square_size,
+                self.square_size, self.square_size
+            )
+            end_rect = pygame.Rect(
+                self.board_left + disp_end[1] * self.square_size,
+                self.board_top  + disp_end[0] * self.square_size,
+                self.square_size, self.square_size
+            )
+            # Green border (RGB: 0,255,0).
+            pygame.draw.rect(self.screen, (0,255,0), start_rect, 4)
+            pygame.draw.rect(self.screen, (0,255,0), end_rect, 4)
+
     def _draw_hud(self):
         rect = pygame.Rect(0, 0, self.window_width, self._top_hud_h())
         pygame.draw.rect(self.screen, COLOR_HUD_BG, rect)
@@ -444,32 +512,76 @@ class KaissaGUI:
     def _draw_show_all_moves(self):
         if not (self.show_all_moves_red or self.show_all_moves_yellow):
             return
+
+        red_targets = {}
+        yellow_targets = {}
+
         original_turn = self.game_engine.is_yellow_turn
+
+        from kaissa_engine.kaissa_engine import get_protected_squares, index_to_rc
+
         if self.show_all_moves_red:
             self.game_engine.is_yellow_turn = False
             moves_red = self.game_engine.get_legal_moves()
-            self._draw_moves_overlay(moves_red, fill_color=COLOR_SHOW_RED, capture_color=COLOR_CAPTURE_RED)
+            for mv in moves_red:
+                end = mv[1]
+                red_targets[end] = red_targets.get(end, 0) + 1
+
+            red_protected = get_protected_squares(self.game_engine.board, color_flag=False)
+            for idx, count in red_protected.items():
+                rc = index_to_rc(idx)
+                red_targets[rc] = red_targets.get(rc, 0) + count
+
         if self.show_all_moves_yellow:
             self.game_engine.is_yellow_turn = True
-            moves_yel = self.game_engine.get_legal_moves()
-            self._draw_moves_overlay(moves_yel, fill_color=COLOR_SHOW_YELLOW, capture_color=COLOR_CAPTURE_YELLOW)
+            moves_yellow = self.game_engine.get_legal_moves()
+            for mv in moves_yellow:
+                end = mv[1]
+                yellow_targets[end] = yellow_targets.get(end, 0) + 1
+
+            yellow_protected = get_protected_squares(self.game_engine.board, color_flag=True)
+            for idx, count in yellow_protected.items():
+                rc = index_to_rc(idx)
+                yellow_targets[rc] = yellow_targets.get(rc, 0) + count
+
         self.game_engine.is_yellow_turn = original_turn
 
-    def _draw_moves_overlay(self, move_list, fill_color, capture_color):
-        st = self.game_engine.get_state()
-        for mv in move_list:
-            (_, end) = mv[0], mv[1]
-            er, ec = end
-            occupant = None
-            if 0 <= er < BOARD_ROWS and 0 <= ec < BOARD_COLS:
-                occupant = st[er][ec]
-            color = fill_color if occupant is None else capture_color
-            dr, dc = self._logical_to_display(er, ec)
-            x = self.board_left + dc*self.square_size
-            y = self.board_top  + dr*self.square_size
-            overlay = pygame.Surface((self.square_size, self.square_size), pygame.SRCALPHA)
-            overlay.fill((*color, 120))
-            self.screen.blit(overlay, (x, y))
+        self._draw_moves_overlay(red_targets, yellow_targets)
+
+
+
+
+    def _draw_moves_overlay(self, red_targets, yellow_targets):
+        font = pygame.font.SysFont(None, 16)
+        squares = set(red_targets.keys()).union(yellow_targets.keys())
+
+        for (r, c) in squares:
+            dr, dc = self._logical_to_display(r, c)
+            x = self.board_left + dc * self.square_size
+            y = self.board_top + dr * self.square_size
+
+            circle_radius = max(5, self.square_size // 10)
+
+            # Red indicator (top-left)
+            if (r, c) in red_targets:
+                count = red_targets[(r, c)]
+                cx = x + 6
+                cy = y + 6
+                pygame.draw.circle(self.screen, COLOR_SHOW_RED, (cx, cy), circle_radius)
+                label = f"x{count}"
+                text = font.render(label, True, (0, 0, 0))
+                self.screen.blit(text, (cx + circle_radius + 2, cy - text.get_height() // 2))
+
+            # Yellow indicator (top-right)
+            if (r, c) in yellow_targets:
+                count = yellow_targets[(r, c)]
+                cx = x + self.square_size - 6 - circle_radius * 2
+                cy = y + 6
+                pygame.draw.circle(self.screen, COLOR_SHOW_YELLOW, (cx, cy), circle_radius)
+                label = f"x{count}"
+                text = font.render(label, True, (0, 0, 0))
+                self.screen.blit(text, (cx + circle_radius + 2, cy - text.get_height() // 2))
+
 
     def _draw_capturable_pieces(self):
         if not self.show_capturable_pieces:
@@ -506,7 +618,7 @@ class KaissaGUI:
                     ptype, is_yellow, has_moved = cell
                     center_x = self.board_left + disp_c*self.square_size + self.square_size//2
                     center_y = self.board_top  + disp_r*self.square_size + self.square_size//2
-                    radius = max(5, (self.square_size // 2) - 5)
+                    radius = max(5, (self.square_size // 2) - 10)
                     fill_color = COLOR_YELLOW_PIECE if is_yellow else COLOR_RED_PIECE
                     pygame.draw.circle(self.screen, fill_color, (center_x, center_y), radius)
                     pygame.draw.circle(self.screen, CIRCLE_BORDER_COLOR, (center_x, center_y), radius, 2)
