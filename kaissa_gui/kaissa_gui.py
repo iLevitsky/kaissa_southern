@@ -31,6 +31,7 @@ from kaissa_engine.kaissa_engine import (
 # (start, end, [promo]) move tuple just like the original minimax predictor.
 from kaissa_ai.stronger_predictor import predict_best_move_strong
 
+
 # Minimum window dimensions
 MIN_WINDOW_WIDTH = 600
 MIN_WINDOW_HEIGHT = 400
