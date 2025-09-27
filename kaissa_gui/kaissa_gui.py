@@ -1,36 +1,35 @@
 """
-Modified GUI for Southern Kaissa that integrates a stronger best‑move predictor.
-
-This file is a drop‑in replacement for the original ``kaissa_gui/kaissa_gui.py``.
-It imports ``predict_best_move_strong`` from ``kaissa_ai.stronger_predictor`` and
-uses it to suggest stronger moves when a piece is selected.  Everything else
-remains the same as in the original GUI.
-
-Usage:
-
-    python kaissa_gui_modified.py
-
-Ensure that ``kaissa_ai/stronger_predictor.py`` exists in your project and
-that ``kaissa_ai/__init__.py`` marks the folder as a package.
+GUI for Southern Kaissa with:
+- Strong predictor (press 'S' for green best-move hint)
+- Blunder overlays (press 'E' after selecting a piece):
+    * RED border on a destination if the moved piece will die immediately
+      + red ARROWS from enemy piece(s) to that destination
+    * ORANGE border if some other piece will die immediately
+      + orange ARROWS from enemy piece(s) to those victim squares
+- Capturable overlay (press 'C'):
+    * Shows every square that is capturable by either side
+    * RED ARROWS from Red attackers to Yellow victims
+    * YELLOW ARROWS from Yellow attackers to Red victims
 """
 
+import math
 import pygame
 import sys
 import os
 from pygame.locals import VIDEORESIZE
 
-from kaissa_engine.kaissa_engine import get_protected_squares, square_index, index_to_rc
+from kaissa_engine.kaissa_engine import get_protected_squares, index_to_rc
 from kaissa_engine.kaissa_engine import (
     KaissaGameEngine, BOARD_ROWS, BOARD_COLS,
     UBAR, UBARA, TARNSMAN, BUILDER, INITIATE,
     SCRIBE, ASSASSIN, RIDER, SPEARMAN, HOMESTONE
 )
 
-# Import the strong predictor.  If you haven't created ``kaissa_ai/stronger_predictor.py``
-# yet, follow the instructions to add that file.  The function returns a
-# (start, end, [promo]) move tuple just like the original minimax predictor.
+# Strong predictor
 from kaissa_ai.stronger_predictor import predict_best_move_strong
 
+# Blunder checker (borders + arrow sources)
+from kaissa_ai.blunder_evaluator import classify_destinations_for_selected_piece
 
 # Minimum window dimensions
 MIN_WINDOW_WIDTH = 600
@@ -40,7 +39,7 @@ MIN_WINDOW_HEIGHT = 400
 SIDE_PANEL_RATIO = 0.10
 TOP_HUD_RATIO    = 0.10
 
-# Colour definitions (RGB)
+# Colours
 COLOR_YELLOW_PIECE  = (255, 220, 100)
 COLOR_RED_PIECE     = (220, 60, 60)
 CIRCLE_BORDER_COLOR = (0, 0, 0)
@@ -54,14 +53,14 @@ COLOR_TEXT          = (0, 0, 0)
 COLOR_HUD_BG        = (100, 100, 100)
 COLOR_HUD_TEXT      = (255, 255, 255)
 
-COLOR_SHOW_RED      = (255, 80, 80)
-COLOR_SHOW_YELLOW   = (255, 255, 150)
-COLOR_CAPTURE_RED   = (255, 40, 40)
-COLOR_CAPTURE_YELLOW= (255, 255, 80)
+COLOR_SHOW_RED      = (255, 80, 80)      # move bubbles & red-side arrows in C-view
+COLOR_SHOW_YELLOW   = (255, 255, 150)    # move bubbles & yellow-side arrows in C-view
+COLOR_ALL_CAPTURES  = (255, 0, 0)        # red overlay on capturable squares
 
-COLOR_ALL_CAPTURES  = (255, 0, 0)
+COLOR_BLUNDER_RED    = (255, 0, 0)       # moved piece dies (E-view)
+COLOR_BLUNDER_ORANGE = (255, 165, 0)     # other piece dies (E-view)
 
-# Mapping of piece types to symbols (fallback when no image is found)
+# Fallback symbols
 PIECE_SYMBOLS = {
     (UBAR, True): "U",       (UBAR, False): "U",
     (UBARA, True): "V",      (UBARA, False): "V",
@@ -71,11 +70,10 @@ PIECE_SYMBOLS = {
     (SCRIBE, True): "S",     (SCRIBE, False): "S",
     (ASSASSIN, True): "A",   (ASSASSIN, False): "A",
     (RIDER, True): "R",      (RIDER, False): "R",
-    (SPEARMAN, True): "P",    (SPEARMAN, False): "P",
+    (SPEARMAN, True): "P",   (SPEARMAN, False): "P",
     (HOMESTONE, True): "H",  (HOMESTONE, False): "H",
 }
 
-# Map piece type constants to human‑readable names for loading images
 PIECE_NAME_MAP = {
     UBAR:      "ubar",
     UBARA:     "ubara",
@@ -90,27 +88,25 @@ PIECE_NAME_MAP = {
 }
 
 class KaissaGUI:
-    """Graphical user interface for Southern Kaissa."""
-
     def __init__(self):
         pygame.init()
         self.window_width  = 1000
         self.window_height = 600
 
         self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
-        pygame.display.set_caption("Southern Kaissa (Promotions)")
+        pygame.display.set_caption("Southern Kaissa (Enhanced GUI)")
 
         self.game_engine = KaissaGameEngine()
 
-        # Suggested moves: best move for selected piece and overall best
-        self.best_move = None      # best move for the selected piece
-        self.best_overall = None   # best move overall for the current side
+        # Suggestions
+        self.best_move = None
+        self.best_overall = None
 
-        # Selected square and legal moves for the selected piece
+        # Selection
         self.selected_square = None
         self.legal_moves_for_selected = []
 
-        # Captured pieces lists
+        # Captures panel
         self.red_captures = []
         self.yellow_captures = []
         self.half_move_count = 0
@@ -123,6 +119,13 @@ class KaissaGUI:
         self.show_all_moves_yellow = False
         self.show_capturable_pieces = False
 
+        # Blunder overlay state (E)
+        self.show_blunders_for_selected = False
+        self.blunder_red_dests = set()
+        self.blunder_orange_dests = set()
+        self.blunder_red_arrows = set()      # {((fr,fc),(tr,tc))}
+        self.blunder_orange_arrows = set()   # {((fr,fc),(tr,tc))}
+
         # Fonts
         self.font_small  = pygame.font.SysFont(None, 20)
         self.font_medium = pygame.font.SysFont(None, 32)
@@ -131,7 +134,7 @@ class KaissaGUI:
         self.piece_images = self._load_piece_images()
         self._calc_layout()
 
-    # --- Initialisation helpers ---
+    # --- Init helpers ---
     def _load_piece_images(self):
         images_dict = {}
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -181,7 +184,7 @@ class KaissaGUI:
         pygame.quit()
         sys.exit()
 
-    # --- Event handling ---
+    # --- Events ---
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -197,8 +200,7 @@ class KaissaGUI:
                     self._reset_game()
                 elif event.key == pygame.K_f:
                     self.board_flipped = not self.board_flipped
-                    self.selected_square = None
-                    self.legal_moves_for_selected = []
+                    self._clear_selection_and_overlays()
                 elif event.key == pygame.K_r:
                     self.show_all_moves_red = not self.show_all_moves_red
                 elif event.key == pygame.K_y:
@@ -206,20 +208,30 @@ class KaissaGUI:
                 elif event.key == pygame.K_c:
                     self.show_capturable_pieces = not self.show_capturable_pieces
                 elif event.key == pygame.K_s:
-                    # On 'S' key, compute a strong best move for the current player
-                    # This can take some time depending on depth/time_limit.
                     self.best_overall = predict_best_move_strong(
                         self.game_engine, max_depth=4, time_limit=5.0
                     )
-                    # Note: you can adjust depth/time here.
+                elif event.key == pygame.K_e:
+                    # Toggle blunder view for the selected piece
+                    if self.selected_square is not None and self.legal_moves_for_selected:
+                        self.show_blunders_for_selected = not self.show_blunders_for_selected
+                        if self.show_blunders_for_selected:
+                            info = classify_destinations_for_selected_piece(
+                                self.game_engine, self.legal_moves_for_selected
+                            )
+                            self.blunder_red_dests = info["red_dests"]
+                            self.blunder_orange_dests = info["orange_dests"]
+                            self.blunder_red_arrows = info["red_arrows"]
+                            self.blunder_orange_arrows = info["orange_arrows"]
+                        else:
+                            self._clear_blunder_overlay()
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
                 self.handle_click(mx, my)
 
     def _reset_game(self):
         self.game_engine.reset()
-        self.selected_square = None
-        self.legal_moves_for_selected = []
+        self._clear_selection_and_overlays()
         self.red_captures = []
         self.yellow_captures = []
         self.half_move_count = 0
@@ -230,13 +242,22 @@ class KaissaGUI:
         self.best_move = None
         self.best_overall = None
 
-    # --- Mouse click handling ---
+    def _clear_blunder_overlay(self):
+        self.blunder_red_dests = set()
+        self.blunder_orange_dests = set()
+        self.blunder_red_arrows = set()
+        self.blunder_orange_arrows = set()
+
+    def _clear_selection_and_overlays(self):
+        self.selected_square = None
+        self.legal_moves_for_selected = []
+        self._clear_blunder_overlay()
+        self.show_blunders_for_selected = False
+
+    # --- Mouse logic ---
     def handle_click(self, mx: int, my: int):
-        # Clicking the homestone icons on side panels
         if self._try_click_homestone_icon(mx, my):
             return
-
-        # Click outside board? ignore
         if not (self.board_left <= mx < self.board_left + self.board_draw_width and
                 self.board_top  <= my < self.board_top  + self.board_draw_height):
             return
@@ -253,48 +274,27 @@ class KaissaGUI:
                 cell = state[r][c]
                 if cell is None:
                     return
-                ptype, is_yellow_color, has_moved_flag = cell
+                _ptype, is_yellow_color, _has_moved = cell
                 if is_yellow_color == self.game_engine.is_yellow_turn:
-                    # Select the square
                     self.selected_square = (r, c)
-                    # Compute overall best move for this turn using strong search
-                    #self.best_overall = predict_best_move_strong(
-                    #    self.game_engine, max_depth=4, time_limit=5.0
-                    #)
-                    # Filter moves that start from the selected square
                     all_moves = self.game_engine.get_legal_moves()
-                    selected_moves = [mv for mv in all_moves if mv[0] == (r, c)]
-                    if selected_moves:
-                        # Use the best overall move if it starts from this piece
-                        if self.best_overall is not None and self.best_overall[0] == (r, c):
-                            self.best_move = self.best_overall
-                        else:
-                            # Otherwise pick the first legal move for the piece
-                            self.best_move = selected_moves[0]
-                    else:
-                        print("No legal moves for selected piece!")
-                    self.legal_moves_for_selected = selected_moves
+                    self.legal_moves_for_selected = [mv for mv in all_moves if mv[0] == (r, c)]
+                    self._clear_blunder_overlay()
+                    self.show_blunders_for_selected = False
+                    self.best_move = None
         else:
-            # Clicking again on same square deselects
             if self.selected_square == (r, c):
-                self.selected_square = None
-                self.legal_moves_for_selected = []
+                self._clear_selection_and_overlays()
                 self.best_move = None
                 return
 
-            # Try to move selected piece to new square
             possible_moves = [mv for mv in self.legal_moves_for_selected if mv[1] == (r, c)]
             if not possible_moves:
-                self.selected_square = None
-                self.legal_moves_for_selected = []
+                self._clear_selection_and_overlays()
                 self.best_move = None
                 return
 
-            chosen_move = None
-            if len(possible_moves) == 1:
-                chosen_move = possible_moves[0]
-            else:
-                chosen_move = self._prompt_promotion_choice(possible_moves)
+            chosen_move = possible_moves[0] if len(possible_moves) == 1 else self._prompt_promotion_choice(possible_moves)
 
             if chosen_move:
                 state = self.game_engine.get_state()
@@ -305,25 +305,21 @@ class KaissaGUI:
                         self.yellow_captures.append(captured_ptype)
                     else:
                         self.red_captures.append(captured_ptype)
+
                 self.game_engine.apply_move(chosen_move)
                 self.half_move_count += 1
-                # Clear suggestions after move
                 self.best_move = None
                 self.best_overall = None
+                self._clear_selection_and_overlays()
 
-            self.selected_square = None
-            self.legal_moves_for_selected = []
-
-    # --- Promotion prompt ---
+    # --- Promotion dialog ---
     def _prompt_promotion_choice(self, possible_moves):
-        # Popup selection for promotion pieces
         w = 300
         h = 150
         popup_rect = pygame.Rect(
             self.window_width//2 - w//2,
             self.window_height//2 - h//2,
-            w,
-            h
+            w, h
         )
         popup_surf = pygame.Surface((w, h))
         popup_surf.fill((200, 200, 200))
@@ -332,11 +328,9 @@ class KaissaGUI:
         txt = font.render("Choose promotion:", True, (0,0,0))
         popup_surf.blit(txt, (10,10))
 
-        # Distinct promotion types
         promos = []
         for mv in possible_moves:
             if len(mv) == 2:
-                # no promotion
                 if None not in promos:
                     promos.append(None)
             elif len(mv) == 3:
@@ -352,15 +346,7 @@ class KaissaGUI:
             bx = x_start + i*(button_w + 10)
             by = y_btn
             rect = pygame.Rect(bx, by, button_w, button_h)
-            label = ""
-            if pr is None:
-                label = "No Promo"
-            elif pr == RIDER:
-                label = "Rider"
-            elif pr == TARNSMAN:
-                label = "Tarnsman"
-            else:
-                label = f"Promo {pr}"
+            label = "No Promo" if pr is None else ("Rider" if pr == RIDER else ("Tarnsman" if pr == TARNSMAN else f"Promo {pr}"))
             buttons.append((rect, pr, label))
 
         while True:
@@ -389,25 +375,22 @@ class KaissaGUI:
                         br = brect.move(popup_rect.x, popup_rect.y)
                         if br.collidepoint(mx, my):
                             for mv in possible_moves:
-                                if len(mv) == 2:
-                                    if pr is None:
-                                        return mv
-                                elif len(mv) == 3:
-                                    if mv[2] == pr:
-                                        return mv
+                                if len(mv) == 2 and pr is None:
+                                    return mv
+                                elif len(mv) == 3 and mv[2] == pr:
+                                    return mv
                             return None
 
-    # --- Homestone click handling ---
+    # --- Homestone icons ---
     def _try_click_homestone_icon(self, mx, my):
         icon_size = 60
-        red_rect = pygame.Rect(0, self.top_hud_height, self.left_side_width, icon_size)
-        yel_rect = pygame.Rect(self.window_width - self.right_side_width, self.top_hud_height,
+        red_rect = pygame.Rect(0, self._top_hud_h(), self.left_side_width, icon_size)
+        yel_rect = pygame.Rect(self.window_width - self.right_side_width, self._top_hud_h(),
                                self.right_side_width, icon_size)
         if red_rect.collidepoint(mx, my):
             if not self.game_engine.red_homestone_placed:
                 if self.selected_square == (-1, -1, "red"):
-                    self.selected_square = None
-                    self.legal_moves_for_selected = []
+                    self._clear_selection_and_overlays()
                 else:
                     self._select_unplaced_homestone(False)
                     self.selected_square = (-1, -1, "red")
@@ -415,8 +398,7 @@ class KaissaGUI:
         if yel_rect.collidepoint(mx, my):
             if not self.game_engine.yellow_homestone_placed:
                 if self.selected_square == (-1, -1, "yellow"):
-                    self.selected_square = None
-                    self.legal_moves_for_selected = []
+                    self._clear_selection_and_overlays()
                 else:
                     self._select_unplaced_homestone(True)
                     self.selected_square = (-1, -1, "yellow")
@@ -425,14 +407,10 @@ class KaissaGUI:
 
     def _select_unplaced_homestone(self, is_yellow):
         all_moves = self.game_engine.get_legal_moves()
-        possible = []
-        for mv in all_moves:
-            st, en = mv[0], mv[1]
-            if st == (-1, -1):
-                possible.append(mv)
-        self.legal_moves_for_selected = possible
+        self.legal_moves_for_selected = [mv for mv in all_moves if mv[0] == (-1, -1)]
+        self._clear_blunder_overlay()
 
-    # --- Coordinate transforms ---
+    # --- Coords helpers ---
     def _display_to_logical(self, rr, cc):
         if not self.board_flipped:
             return rr, cc
@@ -453,32 +431,13 @@ class KaissaGUI:
         self._draw_board_squares()
         self._draw_labels()
         self._draw_show_all_moves()
-        self._draw_capturable_pieces()
+        self._draw_capturable_pieces()   # draws capture arrows when C is ON
+        self._draw_blunder_overlays()    # blunder borders + arrows when E is ON
         self._draw_pieces()
         self._draw_captures()
         self._draw_homestone_icons()
 
-        # Highlight the best move for the selected piece in pink (magenta)
-        # if self.best_move is not None:
-        #     start, end, *rest = self.best_move
-        #     start_r, start_c = start
-        #     end_r, end_c = end
-        #     disp_start = self._logical_to_display(start_r, start_c)
-        #     disp_end   = self._logical_to_display(end_r, end_c)
-        #     start_rect = pygame.Rect(
-        #         self.board_left + disp_start[1] * self.square_size,
-        #         self.board_top  + disp_start[0] * self.square_size,
-        #         self.square_size, self.square_size
-        #     )
-        #     end_rect = pygame.Rect(
-        #         self.board_left + disp_end[1] * self.square_size,
-        #         self.board_top  + disp_end[0] * self.square_size,
-        #         self.square_size, self.square_size
-        #     )
-        #     pygame.draw.rect(self.screen, (255,105,180), start_rect, 4)
-        #     pygame.draw.rect(self.screen, (255,105,180), end_rect, 4)
-
-        # Highlight the overall best move in green
+        # Best overall move (press 'S')
         if self.best_overall is not None:
             start, end, *rest = self.best_overall
             start_r, start_c = start
@@ -504,7 +463,11 @@ class KaissaGUI:
         turn = "Yellow" if self.game_engine.is_yellow_turn else "Red"
         mv_num = (self.half_move_count // 2) + 1
         if not self.game_engine.is_game_over():
-            text = f"Move {mv_num} - {turn}'s turn (N=New, Q/Esc=Quit, F=Flip, R=ShowRed, Y=ShowYellow, C=Capturable, S=StrongHint)"
+            text = (
+                "Move {} - {}'s turn "
+                "(N=New, Q/Esc=Quit, F=Flip, R=ShowRed, Y=ShowYellow, "
+                "C=Capturable, S=StrongHint, E=BlunderCheck)"
+            ).format(mv_num, turn)
         else:
             winner = self.game_engine.get_winner()
             if winner is None:
@@ -566,8 +529,7 @@ class KaissaGUI:
 
         if self.show_all_moves_red:
             self.game_engine.is_yellow_turn = False
-            moves_red = self.game_engine.get_legal_moves()
-            for mv in moves_red:
+            for mv in self.game_engine.get_legal_moves():
                 end = mv[1]
                 red_targets[end] = red_targets.get(end, 0) + 1
             red_protected = get_protected_squares(self.game_engine.board, color_flag=False)
@@ -577,8 +539,7 @@ class KaissaGUI:
 
         if self.show_all_moves_yellow:
             self.game_engine.is_yellow_turn = True
-            moves_yellow = self.game_engine.get_legal_moves()
-            for mv in moves_yellow:
+            for mv in self.game_engine.get_legal_moves():
                 end = mv[1]
                 yellow_targets[end] = yellow_targets.get(end, 0) + 1
             yellow_protected = get_protected_squares(self.game_engine.board, color_flag=True)
@@ -597,7 +558,6 @@ class KaissaGUI:
             x = self.board_left + dc * self.square_size
             y = self.board_top + dr * self.square_size
             circle_radius = max(5, self.square_size // 10)
-            # Red indicator (top‑left)
             if (r, c) in red_targets:
                 count = red_targets[(r, c)]
                 cx = x + 6
@@ -606,7 +566,6 @@ class KaissaGUI:
                 label = f"x{count}"
                 text = font.render(label, True, (0, 0, 0))
                 self.screen.blit(text, (cx + circle_radius + 2, cy - text.get_height() // 2))
-            # Yellow indicator (top‑right)
             if (r, c) in yellow_targets:
                 count = yellow_targets[(r, c)]
                 cx = x + self.square_size - 6 - circle_radius * 2
@@ -616,22 +575,36 @@ class KaissaGUI:
                 text = font.render(label, True, (0, 0, 0))
                 self.screen.blit(text, (cx + circle_radius + 2, cy - text.get_height() // 2))
 
+    # ---------- CAPTURABLE OVERLAY (C) ----------
     def _draw_capturable_pieces(self):
         if not self.show_capturable_pieces:
             return
+
         squares_capturable = set()
+        red_arrows = set()     # red attacker -> yellow victim
+        yellow_arrows = set()  # yellow attacker -> red victim
+
         original_turn = self.game_engine.is_yellow_turn
-        for color in [False, True]:
+
+        for color in [False, True]:  # False=Red to move, True=Yellow to move
             self.game_engine.is_yellow_turn = color
-            all_moves = self.game_engine.get_legal_moves()
             st = self.game_engine.get_state()
-            for mv in all_moves:
+            for mv in self.game_engine.get_legal_moves():
                 er, ec = mv[1]
                 if 0 <= er < BOARD_ROWS and 0 <= ec < BOARD_COLS:
-                    occupant = st[er][ec]
-                    if occupant is not None:
-                        squares_capturable.add((er, ec))
+                    occ = st[er][ec]
+                    if occ is not None:
+                        _ptype, is_yellow, _moved = occ
+                        if is_yellow != color:  # capture of the opposite color
+                            squares_capturable.add((er, ec))
+                            if color:  # Yellow attacker
+                                yellow_arrows.add((mv[0], mv[1]))
+                            else:      # Red attacker
+                                red_arrows.add((mv[0], mv[1]))
+
         self.game_engine.is_yellow_turn = original_turn
+
+        # Red overlay on all capturable squares (existing behavior)
         for (rr, cc) in squares_capturable:
             dr, dc = self._logical_to_display(rr, cc)
             x = self.board_left + dc*self.square_size
@@ -640,6 +613,70 @@ class KaissaGUI:
             overlay.fill((*COLOR_ALL_CAPTURES, 120))
             self.screen.blit(overlay, (x, y))
 
+        # NEW: arrows showing attackers -> victims for both sides
+        red_width = max(3, self.square_size // 14)
+        yel_width = max(3, self.square_size // 14)
+        for (fr, fc), (tr, tc) in red_arrows:
+            self._draw_arrow((fr, fc), (tr, tc), COLOR_SHOW_RED, width=red_width)
+        for (fr, fc), (tr, tc) in yellow_arrows:
+            self._draw_arrow((fr, fc), (tr, tc), COLOR_SHOW_YELLOW, width=yel_width)
+
+    # ---------- BLUNDER OVERLAYS (E) ----------
+    def _draw_blunder_overlays(self):
+        if not self.show_blunders_for_selected:
+            return
+        thickness = max(3, self.square_size // 12)
+
+        # Borders on destination squares
+        for (rr, cc) in self.blunder_red_dests:
+            dr, dc = self._logical_to_display(rr, cc)
+            x = self.board_left + dc * self.square_size
+            y = self.board_top  + dr * self.square_size
+            pygame.draw.rect(self.screen, COLOR_BLUNDER_RED, pygame.Rect(x, y, self.square_size, self.square_size), thickness)
+
+        for (rr, cc) in self.blunder_orange_dests:
+            dr, dc = self._logical_to_display(rr, cc)
+            x = self.board_left + dc * self.square_size
+            y = self.board_top  + dr * self.square_size
+            pygame.draw.rect(self.screen, COLOR_BLUNDER_ORANGE, pygame.Rect(x, y, self.square_size, self.square_size), thickness)
+
+        # Arrows from enemy pieces to threatened squares
+        for (fr, fc), (tr, tc) in self.blunder_red_arrows:
+            self._draw_arrow((fr, fc), (tr, tc), COLOR_BLUNDER_RED, width=max(3, self.square_size // 14))
+        for (fr, fc), (tr, tc) in self.blunder_orange_arrows:
+            self._draw_arrow((fr, fc), (tr, tc), COLOR_BLUNDER_ORANGE, width=max(2, self.square_size // 16))
+
+    # ---------- Arrow utilities ----------
+    def _square_center_px(self, rr, cc):
+        dr, dc = self._logical_to_display(rr, cc)
+        cx = self.board_left + dc * self.square_size + self.square_size // 2
+        cy = self.board_top  + dr * self.square_size + self.square_size // 2
+        return cx, cy
+
+    def _draw_arrow(self, from_sq, to_sq, color, width=2):
+        """Draw a line with a small triangular arrowhead."""
+        fx, fy = self._square_center_px(*from_sq)
+        tx, ty = self._square_center_px(*to_sq)
+
+        head_len = max(10, self.square_size // 4)
+        vx, vy = tx - fx, ty - fy
+        dist = math.hypot(vx, vy)
+        if dist < 1e-3:
+            return
+        ux, uy = vx / dist, vy / dist
+        bx, by = tx - ux * head_len, ty - uy * head_len
+
+        # shaft
+        pygame.draw.line(self.screen, color, (fx, fy), (bx, by), width)
+
+        # arrowhead triangle
+        perp = (-uy, ux)
+        half = head_len * 0.4
+        p1 = (tx, ty)
+        p2 = (bx + perp[0] * half, by + perp[1] * half)
+        p3 = (bx - perp[0] * half, by - perp[1] * half)
+        pygame.draw.polygon(self.screen, color, [p1, p2, p3])
+
     def _draw_pieces(self):
         st = self.game_engine.get_state()
         for r in range(BOARD_ROWS):
@@ -647,7 +684,7 @@ class KaissaGUI:
                 cell = st[r][c]
                 if cell:
                     disp_r, disp_c = self._logical_to_display(r, c)
-                    ptype, is_yellow_color, has_moved_flag = cell
+                    ptype, is_yellow_color, _has_moved = cell
                     center_x = self.board_left + disp_c*self.square_size + self.square_size//2
                     center_y = self.board_top  + disp_r*self.square_size + self.square_size//2
                     radius = max(5, (self.square_size // 2) - 10)
@@ -669,12 +706,13 @@ class KaissaGUI:
     def _draw_captures(self):
         icon_size = min(self.left_side_width, 40)
         x_left = (self.left_side_width - icon_size) // 2
-        y_offset = self._top_hud_h() + 70
         for i, pt in enumerate(self.red_captures):
-            self._draw_capture_icon(pt, False, x_left, y_offset + i*icon_size, icon_size)
+            y_offset = self._top_hud_h() + 70 + i*icon_size
+            self._draw_capture_icon(pt, False, x_left, y_offset, icon_size)
         x_right = self.window_width - self.right_side_width + (self.right_side_width - icon_size)//2
         for i, pt in enumerate(self.yellow_captures):
-            self._draw_capture_icon(pt, True, x_right, self._top_hud_h() + 70 + i*icon_size, icon_size)
+            y_offset = self._top_hud_h() + 70 + i*icon_size
+            self._draw_capture_icon(pt, True, x_right, y_offset, icon_size)
 
     def _draw_capture_icon(self, ptype, is_yellow_color, x, y, size):
         rect = pygame.Rect(x, y, size, size)
@@ -698,15 +736,13 @@ class KaissaGUI:
 
     def _draw_homestone_icons(self):
         icon_size = 60
-        # Red homestone
         red_rect = pygame.Rect(0, self._top_hud_h(), self.left_side_width, icon_size)
         pygame.draw.rect(self.screen, (60,60,60), red_rect)
         if not self.game_engine.red_homestone_placed:
             cx = red_rect.x + red_rect.width//2
             cy = red_rect.y + red_rect.height//2
             radius = (icon_size//2) - 5
-            fill_color = COLOR_RED_PIECE
-            pygame.draw.circle(self.screen, fill_color, (cx, cy), radius)
+            pygame.draw.circle(self.screen, COLOR_RED_PIECE, (cx, cy), radius)
             pygame.draw.circle(self.screen, (0,0,0), (cx, cy), radius, 2)
             piece_img = self.piece_images[HOMESTONE]
             if piece_img:
@@ -719,7 +755,7 @@ class KaissaGUI:
                 srf = self.font_medium.render(symbol, True, COLOR_TEXT)
                 rect = srf.get_rect(center=(cx, cy))
                 self.screen.blit(srf, rect)
-        # Yellow homestone
+
         yel_rect = pygame.Rect(self.window_width - self.right_side_width, self._top_hud_h(),
                                self.right_side_width, icon_size)
         pygame.draw.rect(self.screen, (60,60,60), yel_rect)
@@ -727,8 +763,7 @@ class KaissaGUI:
             cx = yel_rect.x + yel_rect.width//2
             cy = yel_rect.y + yel_rect.height//2
             radius = (icon_size//2) - 5
-            fill_color = COLOR_YELLOW_PIECE
-            pygame.draw.circle(self.screen, fill_color, (cx, cy), radius)
+            pygame.draw.circle(self.screen, COLOR_YELLOW_PIECE, (cx, cy), radius)
             pygame.draw.circle(self.screen, (0,0,0), (cx, cy), radius, 2)
             piece_img = self.piece_images[HOMESTONE]
             if piece_img:
@@ -742,7 +777,7 @@ class KaissaGUI:
                 rect = srf.get_rect(center=(cx, cy))
                 self.screen.blit(srf, rect)
 
-# Run the GUI if executed directly
+# Run
 if __name__ == "__main__":
     gui = KaissaGUI()
     gui.run()
